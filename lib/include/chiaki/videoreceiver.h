@@ -32,6 +32,7 @@ typedef struct chiaki_video_receiver_t
 
 	int32_t frames_lost;
 	int32_t reference_frames[16];
+	int reference_frame_head;
 	ChiakiBitstream bitstream;
 	bool waiting_for_idr;
 } ChiakiVideoReceiver;

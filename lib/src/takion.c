@@ -175,6 +175,7 @@ static ChiakiErrorCode takion_recv(ChiakiTakion *takion, uint8_t *buf, size_t *b
 static ChiakiErrorCode takion_recv_message_init_ack(ChiakiTakion *takion, TakionMessagePayloadInitAck *payload);
 static ChiakiErrorCode takion_recv_message_cookie_ack(ChiakiTakion *takion);
 static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uint8_t *buf, size_t buf_size);
+static void takion_postpone_packet(ChiakiTakion *takion, uint8_t *buf, size_t buf_size);
 static ChiakiErrorCode takion_read_extra_sock_messages(ChiakiTakion *takion);
 
 CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, ChiakiTakionConnectInfo *info, chiaki_socket_t *sock)
@@ -980,23 +981,56 @@ static void *takion_thread_func(void *user)
 			takion->postponed_packets_count = 0;
 		}
 
-		size_t received_size = 1500;
-		uint8_t *buf = malloc(received_size); // TODO: no malloc?
-		if(!buf)
-			break;
-		ChiakiErrorCode err = takion_recv(takion, buf, &received_size, UINT64_MAX);
+		uint8_t stack_buf[1500];
+		size_t received_size = sizeof(stack_buf);
+		ChiakiErrorCode err = takion_recv(takion, stack_buf, &received_size, UINT64_MAX);
 		if(err != CHIAKI_ERR_SUCCESS)
-		{
-			free(buf);
 			break;
-		}
-		uint8_t *resized_buf = realloc(buf, received_size);
-		if(!resized_buf)
-		{
-			free(buf);
+
+		if(received_size == 0)
 			continue;
+
+		uint8_t base_type = (uint8_t)(stack_buf[0] & TAKION_PACKET_BASE_TYPE_MASK);
+
+		if(takion_handle_packet_mac(takion, base_type, stack_buf, received_size) != CHIAKI_ERR_SUCCESS)
+			continue;
+
+		switch(base_type)
+		{
+			case TAKION_PACKET_TYPE_VIDEO:
+			case TAKION_PACKET_TYPE_AUDIO:
+				if(takion->enable_crypt && !takion->gkcrypt_remote)
+				{
+					// Postpone: needs heap allocation since pointer is stored
+					uint8_t *heap_buf = malloc(received_size);
+					if(heap_buf)
+					{
+						memcpy(heap_buf, stack_buf, received_size);
+						takion_postpone_packet(takion, heap_buf, received_size);
+					}
+				}
+				else
+				{
+					// AV packets: process directly from stack buffer (no ownership transfer)
+					takion_handle_packet_av(takion, base_type, stack_buf, received_size);
+				}
+				break;
+			case TAKION_PACKET_TYPE_CONTROL:
+			{
+				// Control packets: need heap allocation for reorder queue ownership
+				uint8_t *heap_buf = malloc(received_size);
+				if(heap_buf)
+				{
+					memcpy(heap_buf, stack_buf, received_size);
+					takion_handle_packet_message(takion, heap_buf, received_size);
+				}
+				break;
+			}
+			default:
+				CHIAKI_LOGW(takion->log, "Takion packet with unknown type %#x received", base_type);
+				chiaki_log_hexdump(takion->log, CHIAKI_LOG_WARNING, stack_buf, received_size);
+				break;
 		}
-		takion_handle_packet(takion, resized_buf, received_size);
 	}
 
 	chiaki_takion_send_buffer_fini(&takion->send_buffer);

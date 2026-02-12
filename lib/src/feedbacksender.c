@@ -81,14 +81,43 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_feedback_sender_set_controller_state(Chiaki
 	return CHIAKI_ERR_SUCCESS;
 }
 
-static bool controller_state_equals_for_feedback_state(ChiakiControllerState *a, ChiakiControllerState *b)
+#define FEEDBACK_DIFF_HISTORY  0x01  // buttons, L2/R2, touches changed
+#define FEEDBACK_DIFF_STATE    0x02  // sticks or motion changed
+
+static int controller_state_diff(ChiakiControllerState *a, ChiakiControllerState *b)
 {
-	if(!(a->left_x == b->left_x
-		&& a->left_y == b->left_y
-		&& a->right_x == b->right_x
-		&& a->right_y == b->right_y))
-		return false;
-#define CHECKF(n) if(a->n < b->n - 0.0000001f || a->n > b->n + 0.0000001f) return false
+	int diff = 0;
+
+	// Check history-relevant fields first (buttons, triggers, touches) — cheapest
+	if(a->buttons != b->buttons || a->l2_state != b->l2_state || a->r2_state != b->r2_state)
+		diff |= FEEDBACK_DIFF_HISTORY;
+
+	if(!(diff & FEEDBACK_DIFF_HISTORY))
+	{
+		for(size_t i=0; i<CHIAKI_CONTROLLER_TOUCHES_MAX; i++)
+		{
+			if(a->touches[i].id != b->touches[i].id)
+			{
+				diff |= FEEDBACK_DIFF_HISTORY;
+				break;
+			}
+			if(a->touches[i].id >= 0 && (a->touches[i].x != b->touches[i].x || a->touches[i].y != b->touches[i].y))
+			{
+				diff |= FEEDBACK_DIFF_HISTORY;
+				break;
+			}
+		}
+	}
+
+	// Check state-relevant fields (sticks, gyro, accel, orient)
+	if(a->left_x != b->left_x || a->left_y != b->left_y
+		|| a->right_x != b->right_x || a->right_y != b->right_y)
+	{
+		diff |= FEEDBACK_DIFF_STATE;
+		return diff;
+	}
+
+#define CHECKF(n) if(a->n < b->n - 0.0000001f || a->n > b->n + 0.0000001f) { diff |= FEEDBACK_DIFF_STATE; return diff; }
 	CHECKF(gyro_x);
 	CHECKF(gyro_y);
 	CHECKF(gyro_z);
@@ -100,7 +129,8 @@ static bool controller_state_equals_for_feedback_state(ChiakiControllerState *a,
 	CHECKF(orient_z);
 	CHECKF(orient_w);
 #undef CHECKF
-	return true;
+
+	return diff;
 }
 
 static void feedback_sender_send_state(ChiakiFeedbackSender *feedback_sender)
@@ -125,23 +155,6 @@ static void feedback_sender_send_state(ChiakiFeedbackSender *feedback_sender)
 	ChiakiErrorCode err = chiaki_takion_send_feedback_state(feedback_sender->takion, feedback_sender->state_seq_num++, &state);
 	if(err != CHIAKI_ERR_SUCCESS)
 		CHIAKI_LOGE(feedback_sender->log, "FeedbackSender failed to send Feedback State");
-}
-
-static bool controller_state_equals_for_feedback_history(ChiakiControllerState *a, ChiakiControllerState *b)
-{
-	if(!(a->buttons == b->buttons
-		&& a->l2_state == b->l2_state
-		&& a->r2_state == b->r2_state))
-		return false;
-
-	for(size_t i=0; i<CHIAKI_CONTROLLER_TOUCHES_MAX; i++)
-	{
-		if(a->touches[i].id != b->touches[i].id)
-			return false;
-		if(a->touches[i].id >= 0 && (a->touches[i].x != b->touches[i].x || a->touches[i].y != b->touches[i].y))
-			return false;
-	}
-	return true;
 }
 
 static void feedback_sender_send_history_packet(ChiakiFeedbackSender *feedback_sender)
@@ -267,11 +280,9 @@ static void *feedback_sender_thread_func(void *user)
 			// TODO: FEEDBACK_STATE_TIMEOUT_MIN_MS
 			feedback_sender->controller_state_changed = false;
 
-			// don't need to send feedback state if nothing relevant changed
-			if(controller_state_equals_for_feedback_state(&feedback_sender->controller_state, &feedback_sender->controller_state_prev))
-				send_feedback_state = false;
-
-			send_feedback_history = !controller_state_equals_for_feedback_history(&feedback_sender->controller_state, &feedback_sender->controller_state_prev);
+			int diff = controller_state_diff(&feedback_sender->controller_state, &feedback_sender->controller_state_prev);
+			send_feedback_state = (diff & FEEDBACK_DIFF_STATE) != 0;
+			send_feedback_history = (diff & FEEDBACK_DIFF_HISTORY) != 0;
 		} // else: timeout
 
 		if(send_feedback_state)

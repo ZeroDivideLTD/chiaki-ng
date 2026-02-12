@@ -9,20 +9,8 @@ static ChiakiErrorCode chiaki_video_receiver_flush_frame(ChiakiVideoReceiver *vi
 
 static void add_ref_frame(ChiakiVideoReceiver *video_receiver, int32_t frame)
 {
-	if(video_receiver->reference_frames[0] != -1)
-	{
-		memmove(&video_receiver->reference_frames[1], &video_receiver->reference_frames[0], sizeof(int32_t) * 15);
-		video_receiver->reference_frames[0] = frame;
-		return;
-	}
-	for(int i=15; i>=0; i--)
-	{
-		if(video_receiver->reference_frames[i] == -1)
-		{
-			video_receiver->reference_frames[i] = frame;
-			return;
-		}
-	}
+	video_receiver->reference_frames[video_receiver->reference_frame_head] = frame;
+	video_receiver->reference_frame_head = (video_receiver->reference_frame_head + 1) % 16;
 }
 
 static bool have_ref_frame(ChiakiVideoReceiver *video_receiver, int32_t frame)
@@ -50,6 +38,7 @@ CHIAKI_EXPORT void chiaki_video_receiver_init(ChiakiVideoReceiver *video_receive
 
 	video_receiver->frames_lost = 0;
 	memset(video_receiver->reference_frames, -1, sizeof(video_receiver->reference_frames));
+	video_receiver->reference_frame_head = 0;
 	chiaki_bitstream_init(&video_receiver->bitstream, video_receiver->log, video_receiver->session->connect_info.video_profile.codec);
 	video_receiver->waiting_for_idr = false;
 }
