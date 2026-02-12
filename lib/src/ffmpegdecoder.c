@@ -86,6 +86,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_ffmpeg_decoder_init(ChiakiFfmpegDecoder *de
 		CHIAKI_LOGI(log, "Using hardware decoder \"%s\" with pix_fmt=%s", hw_decoder_name, av_get_pix_fmt_name(decoder->hw_pix_fmt));
 	}
 
+	decoder->codec_context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+
 	if(avcodec_open2(decoder->codec_context, decoder->av_codec, NULL) < 0)
 	{
 		CHIAKI_LOGE(log, "Failed to open codec context");
