@@ -142,7 +142,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_frame_processor_alloc_frame(ChiakiFrameProc
 		}
 		frame_processor->frame_buf_size = frame_buf_size_required;
 	}
-	memset(frame_processor->frame_buf, 0, frame_buf_size_required + CHIAKI_VIDEO_BUFFER_PADDING_SIZE);
+	memset(frame_processor->frame_buf + frame_buf_size_required, 0, CHIAKI_VIDEO_BUFFER_PADDING_SIZE);
 
 	return CHIAKI_ERR_SUCCESS;
 }
@@ -206,9 +206,9 @@ static ChiakiErrorCode chiaki_frame_processor_fec(ChiakiFrameProcessor *frame_pr
 
 	size_t erasures_count = (frame_processor->units_source_expected + frame_processor->units_fec_expected)
 			- (frame_processor->units_source_received + frame_processor->units_fec_received);
-	unsigned int *erasures = calloc(erasures_count, sizeof(unsigned int));
-	if(!erasures)
-		return CHIAKI_ERR_MEMORY;
+	if(erasures_count > UNIT_SLOTS_MAX)
+		return CHIAKI_ERR_INVALID_DATA;
+	unsigned int erasures[UNIT_SLOTS_MAX];
 
 	size_t erasure_index = 0;
 	for(size_t i=0; i<frame_processor->units_source_expected + frame_processor->units_fec_expected; i++)
@@ -220,7 +220,6 @@ static ChiakiErrorCode chiaki_frame_processor_fec(ChiakiFrameProcessor *frame_pr
 			{
 				// should never happen by design, but too scary not to check
 				assert(false);
-				free(erasures);
 				return CHIAKI_ERR_UNKNOWN;
 			}
 			erasures[erasure_index++] = (unsigned int)i;
@@ -260,7 +259,6 @@ static ChiakiErrorCode chiaki_frame_processor_fec(ChiakiFrameProcessor *frame_pr
 		}
 	}
 
-	free(erasures);
 	return err;
 }
 
