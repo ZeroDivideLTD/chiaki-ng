@@ -12,6 +12,8 @@
 extern "C" {
 #endif
 
+#define CHIAKI_FEEDBACK_STATE_QUEUE_SIZE 4
+
 typedef struct chiaki_feedback_sender_t
 {
 	ChiakiLog *log;
@@ -27,6 +29,11 @@ typedef struct chiaki_feedback_sender_t
 	ChiakiControllerState controller_state_prev;
 	ChiakiControllerState controller_state;
 	bool controller_state_changed;
+
+	ChiakiControllerState state_queue[CHIAKI_FEEDBACK_STATE_QUEUE_SIZE];
+	size_t state_queue_head;
+	size_t state_queue_count;
+
 	ChiakiMutex state_mutex;
 	ChiakiCond state_cond;
 } ChiakiFeedbackSender;

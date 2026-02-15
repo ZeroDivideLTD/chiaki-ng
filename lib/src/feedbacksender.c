@@ -18,6 +18,8 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_feedback_sender_init(ChiakiFeedbackSender *
 	chiaki_controller_state_set_idle(&feedback_sender->controller_state);
 
 	feedback_sender->state_seq_num = 0;
+	feedback_sender->state_queue_head = 0;
+	feedback_sender->state_queue_count = 0;
 
 	feedback_sender->history_seq_num = 0;
 	ChiakiErrorCode err = chiaki_feedback_history_buffer_init(&feedback_sender->history_buf, FEEDBACK_HISTORY_BUFFER_SIZE);
@@ -66,10 +68,34 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_feedback_sender_set_controller_state(Chiaki
 	if(err != CHIAKI_ERR_SUCCESS)
 		return err;
 
-	if(chiaki_controller_state_equals(&feedback_sender->controller_state, state))
+	// Deduplicate: compare against the last queued entry (or current state if queue empty)
+	ChiakiControllerState *last;
+	if(feedback_sender->state_queue_count > 0)
+	{
+		size_t last_idx = (feedback_sender->state_queue_head + feedback_sender->state_queue_count - 1) % CHIAKI_FEEDBACK_STATE_QUEUE_SIZE;
+		last = &feedback_sender->state_queue[last_idx];
+	}
+	else
+		last = &feedback_sender->controller_state;
+
+	if(chiaki_controller_state_equals(last, state))
 	{
 		chiaki_mutex_unlock(&feedback_sender->state_mutex);
 		return CHIAKI_ERR_SUCCESS;
+	}
+
+	// Push to queue
+	if(feedback_sender->state_queue_count < CHIAKI_FEEDBACK_STATE_QUEUE_SIZE)
+	{
+		size_t idx = (feedback_sender->state_queue_head + feedback_sender->state_queue_count) % CHIAKI_FEEDBACK_STATE_QUEUE_SIZE;
+		feedback_sender->state_queue[idx] = *state;
+		feedback_sender->state_queue_count++;
+	}
+	else
+	{
+		// Queue full: overwrite the last entry (preserves first transition, keeps latest)
+		size_t last_idx = (feedback_sender->state_queue_head + feedback_sender->state_queue_count - 1) % CHIAKI_FEEDBACK_STATE_QUEUE_SIZE;
+		feedback_sender->state_queue[last_idx] = *state;
 	}
 
 	feedback_sender->controller_state = *state;
@@ -272,26 +298,37 @@ static void *feedback_sender_thread_func(void *user)
 		if(feedback_sender->should_stop)
 			break;
 
-		bool send_feedback_state = true;
-		bool send_feedback_history = false;
-
 		if(feedback_sender->controller_state_changed)
 		{
-			// TODO: FEEDBACK_STATE_TIMEOUT_MIN_MS
 			feedback_sender->controller_state_changed = false;
 
-			int diff = controller_state_diff(&feedback_sender->controller_state, &feedback_sender->controller_state_prev);
-			send_feedback_state = (diff & FEEDBACK_DIFF_STATE) != 0;
-			send_feedback_history = (diff & FEEDBACK_DIFF_HISTORY) != 0;
-		} // else: timeout
+			// Drain all queued state transitions in order
+			size_t count = feedback_sender->state_queue_count;
+			for(size_t i = 0; i < count; i++)
+			{
+				size_t idx = (feedback_sender->state_queue_head + i) % CHIAKI_FEEDBACK_STATE_QUEUE_SIZE;
+				ChiakiControllerState *queued = &feedback_sender->state_queue[idx];
 
-		if(send_feedback_state)
+				// Temporarily set controller_state so send helpers read the right values
+				feedback_sender->controller_state = *queued;
+
+				int diff = controller_state_diff(queued, &feedback_sender->controller_state_prev);
+				if(diff & FEEDBACK_DIFF_STATE)
+					feedback_sender_send_state(feedback_sender);
+				if(diff & FEEDBACK_DIFF_HISTORY)
+					feedback_sender_send_history(feedback_sender);
+
+				feedback_sender->controller_state_prev = *queued;
+			}
+			feedback_sender->state_queue_head = (feedback_sender->state_queue_head + count) % CHIAKI_FEEDBACK_STATE_QUEUE_SIZE;
+			feedback_sender->state_queue_count = 0;
+		}
+		else
+		{
+			// Timeout keepalive — send current state
 			feedback_sender_send_state(feedback_sender);
-
-		if(send_feedback_history)
-			feedback_sender_send_history(feedback_sender);
-
-		feedback_sender->controller_state_prev = feedback_sender->controller_state;
+			feedback_sender->controller_state_prev = feedback_sender->controller_state;
+		}
 	}
 
 	chiaki_mutex_unlock(&feedback_sender->state_mutex);
