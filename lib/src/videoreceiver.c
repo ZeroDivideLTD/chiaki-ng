@@ -124,6 +124,12 @@ CHIAKI_EXPORT void chiaki_video_receiver_av_packet(ChiakiVideoReceiver *video_re
 			err = stream_connection_send_corrupt_frame(&video_receiver->session->stream_connection, next_frame_expected, frame_index - 1);
 			if(err != CHIAKI_ERR_SUCCESS)
 				CHIAKI_LOGW(video_receiver->log, "Error sending corrupt frame.");
+			/* Request IDR immediately on frame gap — without this, every subsequent
+			 * P-frame fails silently in the decoder until the reference chain is
+			 * restored, causing multi-second freezes. */
+			stream_connection_send_idr_request(&video_receiver->session->stream_connection);
+			video_receiver->waiting_for_idr = true;
+			CHIAKI_LOGI(video_receiver->log, "Frame gap detected, requesting IDR frame");
 		}
 
 		video_receiver->frame_index_cur = frame_index;
